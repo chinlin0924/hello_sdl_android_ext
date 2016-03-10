@@ -15,12 +15,18 @@ import com.smartdevicelink.proxy.callbacks.OnServiceEnded;
 import com.smartdevicelink.proxy.callbacks.OnServiceNACKed;
 import com.smartdevicelink.proxy.interfaces.IProxyListenerALM;
 import com.smartdevicelink.proxy.rpc.*;
+import com.smartdevicelink.proxy.rpc.enums.FileType;
 import com.smartdevicelink.proxy.rpc.enums.HMILevel;
 import com.smartdevicelink.proxy.rpc.enums.LockScreenStatus;
 import com.smartdevicelink.proxy.rpc.enums.SdlDisconnectedReason;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class SdlService extends Service implements IProxyListenerALM {
     //region Private static final area
@@ -53,6 +59,11 @@ public class SdlService extends Service implements IProxyListenerALM {
     // holding pending requests to execute them sequentially
     private HashMap<Integer, RPCRequest> pendingSequentialRequests;
 
+    // holding pending requests of files to be uploaded or deleted
+    private HashMap<Integer, String> pendingRemoteFiles;
+
+    // holding a list of unique names of files that exist on the remote unit
+    private Set<String> remoteFiles;
     //endregion
 
     //region Service lifecycle area
@@ -105,6 +116,8 @@ public class SdlService extends Service implements IProxyListenerALM {
         this.appDidConnect = false;
         this.appDidStart = false;
         this.pendingSequentialRequests = new HashMap<>(100);
+        this.pendingRemoteFiles = new HashMap<>(10);
+        this.remoteFiles = new HashSet<>(10);
     }
 
     public void setupProxy() {
@@ -160,6 +173,19 @@ public class SdlService extends Service implements IProxyListenerALM {
             request.setCorrelationID(nextCorrelationID());
         }
 
+        // check for remote file changes (putfile or deletefile)
+        String filename = null;
+        if (request instanceof PutFile) {
+            filename = ((PutFile) request).getSdlFileName();
+        } else if (request instanceof DeleteFile) {
+            filename = ((DeleteFile) request).getSdlFileName();
+        }
+
+        // in case we are going to change the list of remote files:
+        if (filename != null) {
+            this.pendingRemoteFiles.put(request.getCorrelationID(), filename);
+        }
+
         // send the actual request
         try {
             proxy.sendRPCRequest(request);
@@ -195,6 +221,58 @@ public class SdlService extends Service implements IProxyListenerALM {
         }
     }
 
+    //endregion
+
+    //region File & image management area
+
+    private byte[] readResourceData(int resource) {
+        InputStream is = null;
+        try {
+            is = getResources().openRawResource(resource);
+            ByteArrayOutputStream os = new ByteArrayOutputStream(is.available());
+            final int bufferSize = 4096;
+            final byte[] buffer = new byte[bufferSize];
+            int available;
+            while ((available = is.read(buffer)) >= 0) {
+                os.write(buffer, 0, available);
+            }
+            return os.toByteArray();
+        } catch (IOException e) {
+            Log.w("SDL Service", "Can't read icon file", e);
+            return null;
+        } finally {
+            if (is != null) {
+                try {
+                    is.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    PutFile buildPutFile(byte[] data, String filename, FileType type, boolean persistent, boolean system) {
+        boolean graphicSupported = false;
+        PutFile request = null;
+
+        try {
+            graphicSupported = proxy.getDisplayCapabilities().getGraphicSupported();
+        } catch (SdlException e) {
+            e.printStackTrace();
+        }
+
+        if (graphicSupported) {
+            request = new PutFile();
+            request.setBulkData(data);
+            request.setSdlFileName(filename);
+            request.setFileType(type);
+            request.setPersistentFile(persistent);
+            request.setSystemFile(system);
+        }
+
+        return request;
+    }
+    
     //endregion
 
     //region App notification area
@@ -324,16 +402,42 @@ public class SdlService extends Service implements IProxyListenerALM {
 
     @Override
     public void onListFilesResponse(ListFilesResponse response) {
+        if(response.getSuccess()) {
+            if (response.getFilenames() != null) {
+                this.remoteFiles = new HashSet<>(response.getFilenames());
+            } else {
+                this.remoteFiles = new HashSet<>(10);
+            }
+        }
+
         this.handleSequentialRequestsForResponse(response);
     }
 
     @Override
     public void onPutFileResponse(PutFileResponse response) {
+        String filename = this.pendingRemoteFiles.get(response.getCorrelationID());
+
+        if (filename != null) {
+            this.pendingRemoteFiles.remove(response.getCorrelationID());
+            if (response.getSuccess()) {
+                this.remoteFiles.add(filename);
+            }
+        }
+
         this.handleSequentialRequestsForResponse(response);
     }
 
     @Override
     public void onDeleteFileResponse(DeleteFileResponse response) {
+        String filename = this.pendingRemoteFiles.get(response.getCorrelationID());
+
+        if (filename != null) {
+            this.pendingRemoteFiles.remove(response.getCorrelationID());
+            if (response.getSuccess()) {
+                this.remoteFiles.remove(filename);
+            }
+        }
+
         this.handleSequentialRequestsForResponse(response);
     }
 
