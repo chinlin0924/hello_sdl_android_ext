@@ -17,6 +17,7 @@ import com.smartdevicelink.proxy.interfaces.IProxyListenerALM;
 import com.smartdevicelink.proxy.rpc.*;
 import com.smartdevicelink.proxy.rpc.enums.FileType;
 import com.smartdevicelink.proxy.rpc.enums.HMILevel;
+import com.smartdevicelink.proxy.rpc.enums.ImageType;
 import com.smartdevicelink.proxy.rpc.enums.LockScreenStatus;
 import com.smartdevicelink.proxy.rpc.enums.SdlDisconnectedReason;
 
@@ -325,11 +326,49 @@ public class SdlService extends Service implements IProxyListenerALM {
         Log.v("SDL", "onAppDidStart. firstStart = " + (firstStart ? "yes" : "no"));
 
         if (firstStart) {
+            // create a list to hold requests and send them sequentially (because of graphics)
+            Vector<RPCRequest> requests = new Vector<>();
+
+            String graphic = "sdl_icon.png";
+            Image image = new Image();
+            image.setImageType(ImageType.DYNAMIC);
+            image.setValue(graphic);
+            
             Show show = new Show();
             show.setMainField1("Welcome to");
             show.setMainField2("Hello SDL");
 
-            this.sendRequest(show);
+            if (this.remoteFiles.contains("sdl_icon.png")) {
+                // if the image is already available then use it immediately
+                show.setGraphic(image);
+
+                // add the show which will also show the graphic
+                requests.add(show);
+            } else {
+                // the image does not exist now. we need to send a show without graphic
+                // and a putfile after that for the graphic. After the putfile another Show follows.
+
+                // add the first show
+                requests.add(show);
+
+                // create the putfile
+                byte[] data = this.readResourceData(R.drawable.sdl_icon);
+                PutFile putfile = this.buildPutFile(data, graphic, FileType.GRAPHIC_PNG, false, false);
+
+                // create the second show
+                Show showimage = new Show();
+                showimage.setGraphic(image);
+
+                // add these two requests to the list
+                requests.add(putfile);
+                requests.add(showimage);
+            }
+
+            // now send all the requests sequentially.
+            // the first is a show that may contain the graphic if already uploaded
+            // the second is a putfile in case its not uploaded already
+            // the third is another show that contains the graphic
+            this.sendRequests(requests, true);
         }
     }
 
