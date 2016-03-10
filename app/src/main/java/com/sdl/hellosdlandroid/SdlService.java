@@ -9,6 +9,7 @@ import android.util.Log;
 
 import com.smartdevicelink.exception.SdlException;
 import com.smartdevicelink.proxy.RPCRequest;
+import com.smartdevicelink.proxy.RPCResponse;
 import com.smartdevicelink.proxy.SdlProxyALM;
 import com.smartdevicelink.proxy.callbacks.OnServiceEnded;
 import com.smartdevicelink.proxy.callbacks.OnServiceNACKed;
@@ -18,11 +19,14 @@ import com.smartdevicelink.proxy.rpc.enums.HMILevel;
 import com.smartdevicelink.proxy.rpc.enums.LockScreenStatus;
 import com.smartdevicelink.proxy.rpc.enums.SdlDisconnectedReason;
 
+import java.util.HashMap;
+import java.util.List;
+
 public class SdlService extends Service implements IProxyListenerALM {
     //region Private static final area
 
-    private static final String APP_NAME 				= "Hello Sdl";
-	private static final String APP_ID 					= "8675309";
+    private static final String APP_NAME                 = "Hello Sdl";
+    private static final String APP_ID                     = "8675309";
 
     //endregion
 
@@ -45,6 +49,9 @@ public class SdlService extends Service implements IProxyListenerALM {
 
     // variable to keep track if the app received the OnAppDidStart notification
     private boolean appDidStart;
+    
+    // holding pending requests to execute them sequentially
+    private HashMap<Integer, RPCRequest> pendingSequentialRequests;
 
     //endregion
 
@@ -68,7 +75,7 @@ public class SdlService extends Service implements IProxyListenerALM {
     }
 
     @Override
-	public int onStartCommand(Intent intent, int flags, int startId) {
+    public int onStartCommand(Intent intent, int flags, int startId) {
         this.setupProxy();
 
         connectionHandler.postDelayed(new Runnable() {
@@ -78,8 +85,8 @@ public class SdlService extends Service implements IProxyListenerALM {
             }
         }, 180 * 1000);
 
-		return START_STICKY;
-	}
+        return START_STICKY;
+    }
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -97,34 +104,35 @@ public class SdlService extends Service implements IProxyListenerALM {
     private void resetProperties() {
         this.appDidConnect = false;
         this.appDidStart = false;
+        this.pendingSequentialRequests = new HashMap<>(100);
     }
 
     public void setupProxy() {
-		if (proxy == null) {
-			try {
-				this.proxy = new SdlProxyALM(this, APP_NAME, true, APP_ID);
+        if (proxy == null) {
+            try {
+                this.proxy = new SdlProxyALM(this, APP_NAME, true, APP_ID);
                 this.resetProperties();
             } catch (SdlException e) {
-				e.printStackTrace();
-				if (proxy == null) {
-					stopSelf();
-				}
-			}
-		}
-	}
+                e.printStackTrace();
+                if (proxy == null) {
+                    stopSelf();
+                }
+            }
+        }
+    }
 
-	public void disposeProxy() {
-		LockScreenActivity.updateLockScreenStatus(LockScreenStatus.OFF);
+    public void disposeProxy() {
+        LockScreenActivity.updateLockScreenStatus(LockScreenStatus.OFF);
 
-		if (proxy != null) {
-			try {
-				proxy.dispose();
-			} catch (SdlException e) {
-				e.printStackTrace();
-			}
-			proxy = null;
-		}
-	}
+        if (proxy != null) {
+            try {
+                proxy.dispose();
+            } catch (SdlException e) {
+                e.printStackTrace();
+            }
+            proxy = null;
+        }
+    }
 
     //endregion
 
@@ -135,33 +143,71 @@ public class SdlService extends Service implements IProxyListenerALM {
         return correlationID;
     }
 
-	private void sendRequest(RPCRequest request) {
+    private void handleSequentialRequestsForResponse(RPCResponse response) {
+        if (response != null) {
+            Integer correlationID = response.getCorrelationID();
+            RPCRequest request = this.pendingSequentialRequests.get(correlationID);
+
+            if (request != null) {
+                this.sendRequest(request);
+            }
+        }
+    }
+
+    private void sendRequest(RPCRequest request) {
         // auto set a correlation id
-		if (request.getCorrelationID() == null) {
-			request.setCorrelationID(nextCorrelationID());
-		}
+        if (request.getCorrelationID() == null) {
+            request.setCorrelationID(nextCorrelationID());
+        }
 
         // send the actual request
-		try {
-			proxy.sendRPCRequest(request);
-		} catch (SdlException e) {
-			e.printStackTrace();
-		}
-	}
+        try {
+            proxy.sendRPCRequest(request);
+        } catch (SdlException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void sendRequests(List<RPCRequest> requests, boolean sequential) {
+        if (requests == null || requests.size() == 0) {
+            return;
+        }
+
+        if (sequential) {
+            for (int i = 0; i < requests.size() - 1; i++) {
+                // get the request to that a sequential request should be performed
+                RPCRequest request = requests.get(i);
+                // the next request that has to be performed after the current one
+                RPCRequest next = requests.get(i+1);
+
+                // specify the correlation ID for the request
+                request.setCorrelationID(nextCorrelationID());
+
+                // use this correlation id to send the next one
+                this.pendingSequentialRequests.put(request.getCorrelationID(), next);
+            }
+
+            this.sendRequest(requests.get(0));
+        } else {
+            for (RPCRequest request : requests) {
+                this.sendRequest(request);
+            }
+        }
+    }
 
     //endregion
 
     //region App notification area
 
-	private void onAppDidConnect() {
+    private void onAppDidConnect() {
         Log.v("SDL", "onAppDidConnect");
-	}
+    }
 
     private void onAppDidDisconnect() {
         Log.v("SDL", "onAppDidDisconnect");
     }
 
-	private void onAppDidStart(boolean firstStart) {
+    private void onAppDidStart(boolean firstStart) {
         Log.v("SDL", "onAppDidStart. firstStart = " + (firstStart ? "yes" : "no"));
 
         if (firstStart) {
@@ -171,11 +217,11 @@ public class SdlService extends Service implements IProxyListenerALM {
 
             this.sendRequest(show);
         }
-	}
+    }
 
-	private void onAppDidStop() {
+    private void onAppDidStop() {
         Log.v("SDL", "onAppDidStop");
-	}
+    }
 
     //endregion
 
@@ -276,161 +322,199 @@ public class SdlService extends Service implements IProxyListenerALM {
 
     //region RPC response area
 
-	@Override
-	public void onListFilesResponse(ListFilesResponse response) {
-	}
-
-	@Override
-	public void onPutFileResponse(PutFileResponse response) {
-	}
-
-	@Override
-	public void onDeleteFileResponse(DeleteFileResponse response) {
-	}
-
-	@Override
-	public void onSetAppIconResponse(SetAppIconResponse response) {
-	}
-
-	@Override
-	public void onAddCommandResponse(AddCommandResponse response) {
-	}
-
-	@Override
-	public void onSubscribeVehicleDataResponse(SubscribeVehicleDataResponse response) {
-	}
-	
-	@Override
-	public void onAddSubMenuResponse(AddSubMenuResponse response) {
-	}
-
-	@Override
-	public void onCreateInteractionChoiceSetResponse(CreateInteractionChoiceSetResponse response) {
-	}
-
-	@Override
-	public void onAlertResponse(AlertResponse response) {
-	}
-
-	@Override
-	public void onDeleteCommandResponse(DeleteCommandResponse response) {
-	}
-
-	@Override
-	public void onDeleteInteractionChoiceSetResponse(DeleteInteractionChoiceSetResponse response) {
-	}
-
-	@Override
-	public void onDeleteSubMenuResponse(DeleteSubMenuResponse response) {
-	}
-
-	@Override
-	public void onPerformInteractionResponse(PerformInteractionResponse response) {
-	}
-
-	@Override
-	public void onResetGlobalPropertiesResponse(ResetGlobalPropertiesResponse response) {
-	}
-
-	@Override
-	public void onSetGlobalPropertiesResponse(SetGlobalPropertiesResponse response) {
-	}
-
-	@Override
-	public void onSetMediaClockTimerResponse(SetMediaClockTimerResponse response) {
-	}
-
-	@Override
-	public void onShowResponse(ShowResponse response) {
-	}
-
-	@Override
-	public void onSpeakResponse(SpeakResponse response) {
-	}
-
-	@Override
-	public void onSubscribeButtonResponse(SubscribeButtonResponse response) {
-	}
-
-	@Override
-	public void onUnsubscribeButtonResponse(UnsubscribeButtonResponse response) {
-	}
-
-	@Override
-	public void onUnsubscribeVehicleDataResponse(UnsubscribeVehicleDataResponse response) {
-	}
-
-	@Override
-	public void onGetVehicleDataResponse(GetVehicleDataResponse response) {
-	}
-
-	@Override
-	public void onReadDIDResponse(ReadDIDResponse response) {
-	}
-
-	@Override
-	public void onGetDTCsResponse(GetDTCsResponse response) {
-	}
-
-	@Override
-	public void onPerformAudioPassThruResponse(PerformAudioPassThruResponse response) {
-	}
-
-	@Override
-	public void onEndAudioPassThruResponse(EndAudioPassThruResponse response) {
-	}
-
-	@Override
-	public void onScrollableMessageResponse(ScrollableMessageResponse response) {
-	}
-
-	@Override
-	public void onChangeRegistrationResponse(ChangeRegistrationResponse response) {
-	}
-
-	@Override
-	public void onSetDisplayLayoutResponse(SetDisplayLayoutResponse response) {
-	}
-
-	@Override
-	public void onSliderResponse(SliderResponse response) {
-	}
-
-	@Override
-	public void onSystemRequestResponse(SystemRequestResponse response) {
-	}
-
-	@Override
-	public void onDiagnosticMessageResponse(DiagnosticMessageResponse response) {
-	}
-
-	@Override
-	public void onStreamRPCResponse(StreamRPCResponse response) {
-	}
-
-	@Override
-	public void onDialNumberResponse(DialNumberResponse response) {
-	}
-
-	@Override
-	public void onSendLocationResponse(SendLocationResponse response) {
+    @Override
+    public void onListFilesResponse(ListFilesResponse response) {
+        this.handleSequentialRequestsForResponse(response);
     }
 
-	@Override
-	public void onShowConstantTbtResponse(ShowConstantTbtResponse response) {
-	}
+    @Override
+    public void onPutFileResponse(PutFileResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
 
-	@Override
-	public void onAlertManeuverResponse(AlertManeuverResponse response) {
-	}
+    @Override
+    public void onDeleteFileResponse(DeleteFileResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
 
-	@Override
-	public void onUpdateTurnListResponse(UpdateTurnListResponse response) {
-	}
+    @Override
+    public void onSetAppIconResponse(SetAppIconResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
 
-	@Override
-	public void onGenericResponse(GenericResponse response) {
-	}
+    @Override
+    public void onAddCommandResponse(AddCommandResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onSubscribeVehicleDataResponse(SubscribeVehicleDataResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+    @Override
+    public void onAddSubMenuResponse(AddSubMenuResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onCreateInteractionChoiceSetResponse(CreateInteractionChoiceSetResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onAlertResponse(AlertResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onDeleteCommandResponse(DeleteCommandResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onDeleteInteractionChoiceSetResponse(DeleteInteractionChoiceSetResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onDeleteSubMenuResponse(DeleteSubMenuResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onPerformInteractionResponse(PerformInteractionResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onResetGlobalPropertiesResponse(ResetGlobalPropertiesResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onSetGlobalPropertiesResponse(SetGlobalPropertiesResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onSetMediaClockTimerResponse(SetMediaClockTimerResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onShowResponse(ShowResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onSpeakResponse(SpeakResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onSubscribeButtonResponse(SubscribeButtonResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onUnsubscribeButtonResponse(UnsubscribeButtonResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onUnsubscribeVehicleDataResponse(UnsubscribeVehicleDataResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onGetVehicleDataResponse(GetVehicleDataResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onReadDIDResponse(ReadDIDResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onGetDTCsResponse(GetDTCsResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onPerformAudioPassThruResponse(PerformAudioPassThruResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onEndAudioPassThruResponse(EndAudioPassThruResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onScrollableMessageResponse(ScrollableMessageResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onChangeRegistrationResponse(ChangeRegistrationResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onSetDisplayLayoutResponse(SetDisplayLayoutResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onSliderResponse(SliderResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onSystemRequestResponse(SystemRequestResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onDiagnosticMessageResponse(DiagnosticMessageResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onStreamRPCResponse(StreamRPCResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onDialNumberResponse(DialNumberResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onSendLocationResponse(SendLocationResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onShowConstantTbtResponse(ShowConstantTbtResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onAlertManeuverResponse(AlertManeuverResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onUpdateTurnListResponse(UpdateTurnListResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
+
+    @Override
+    public void onGenericResponse(GenericResponse response) {
+        this.handleSequentialRequestsForResponse(response);
+    }
 
     //endregion
 }
