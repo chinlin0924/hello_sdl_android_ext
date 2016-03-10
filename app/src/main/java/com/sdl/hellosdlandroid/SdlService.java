@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.Vector;
 
 public class SdlService extends Service implements IProxyListenerALM {
     //region Private static final area
@@ -55,7 +56,10 @@ public class SdlService extends Service implements IProxyListenerALM {
 
     // variable to keep track if the app received the OnAppDidStart notification
     private boolean appDidStart;
-    
+
+    // variable to keep track if the app icon was set
+    private boolean appIconSet;
+
     // holding pending requests to execute them sequentially
     private HashMap<Integer, RPCRequest> pendingSequentialRequests;
 
@@ -64,6 +68,7 @@ public class SdlService extends Service implements IProxyListenerALM {
 
     // holding a list of unique names of files that exist on the remote unit
     private Set<String> remoteFiles;
+
     //endregion
 
     //region Service lifecycle area
@@ -115,6 +120,7 @@ public class SdlService extends Service implements IProxyListenerALM {
     private void resetProperties() {
         this.appDidConnect = false;
         this.appDidStart = false;
+        this.appIconSet = false;
         this.pendingSequentialRequests = new HashMap<>(100);
         this.pendingRemoteFiles = new HashMap<>(10);
         this.remoteFiles = new HashSet<>(10);
@@ -272,13 +278,43 @@ public class SdlService extends Service implements IProxyListenerALM {
 
         return request;
     }
-    
+
+    void sendListFiles() {
+        this.sendRequest(new ListFiles());
+    }
+
+    void sendAppIcon() {
+        if (this.appIconSet == false) {
+            this.appIconSet = true;
+            String icon = "ic_launcher.png";
+
+            Vector<RPCRequest> requests = new Vector<>(2);
+
+            // did we uploaded an app icon maybe in a previous session?
+            if (this.remoteFiles.contains(icon) == false) {
+                // load the data of the app icon
+                byte[] data = this.readResourceData(R.drawable.ic_launcher);
+                // build a putfile request for a persistent image (upload only once).
+                PutFile putfile = this.buildPutFile(data, icon, FileType.GRAPHIC_PNG, true, false);
+                requests.add(putfile);
+            }
+
+            SetAppIcon setappicon = new SetAppIcon();
+            setappicon.setSdlFileName(icon);
+            requests.add(setappicon);
+
+            // send the requests sequentially
+            this.sendRequests(requests, true);
+        }
+    }
+
     //endregion
 
     //region App notification area
 
     private void onAppDidConnect() {
         Log.v("SDL", "onAppDidConnect");
+        this.sendListFiles();
     }
 
     private void onAppDidDisconnect() {
@@ -409,6 +445,8 @@ public class SdlService extends Service implements IProxyListenerALM {
                 this.remoteFiles = new HashSet<>(10);
             }
         }
+        
+        this.sendAppIcon();
 
         this.handleSequentialRequestsForResponse(response);
     }
