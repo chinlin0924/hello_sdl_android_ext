@@ -12,13 +12,13 @@ public class SdlApplication extends Application{
     @Override
     public void onCreate() {
         super.onCreate();
-
         instance = this;
 
         LockScreenActivity.registerActivityLifecycle(this);
 
-        Intent intent = new Intent(this, SdlService.class);
-        startService(intent);
+        if (SdlService.getInstance() == null) {
+            Intent intent = new Intent(this, SdlService.class);
+            startService(intent);
+        }
     }
-
 }
