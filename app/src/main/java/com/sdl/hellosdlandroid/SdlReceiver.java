@@ -11,12 +11,7 @@ public class SdlReceiver  extends BroadcastReceiver {
 	public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
 		if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)) {
-			SdlService serviceInstance = SdlService.getInstance();
-			if (serviceInstance == null) {
-				Application app = SdlApplication.getInstance();
-				Intent startIntent = new Intent(app, SdlService.class);
-				context.startService(startIntent);
-			}
+			SdlService.startService(context);
 		} else if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(action)) {
 			// signal your service to stop playback
 		}

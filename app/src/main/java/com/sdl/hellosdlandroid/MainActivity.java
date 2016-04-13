@@ -12,6 +12,11 @@ public class MainActivity extends Activity {
 	protected void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.activity_main);
+
+		// the lock screen activity manages itself by offering an application instance
+		LockScreenActivity.registerActivityLifecycle(this.getApplication());
+		// We will try to start the service of SDL
+		SdlService.startService(this);
 	}
 
 	@Override
